@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { FaThermometerHalf, FaCloudShowersHeavy, FaSun } from 'react-icons/fa';
+import { LuSunrise, LuSunset  } from "react-icons/lu";
 
 export default function HomePage() {
   const [location, setLocation] = useState({ 
@@ -11,6 +12,7 @@ export default function HomePage() {
     error: null, 
     source: null 
   });
+  const [darkMode, setDarkMode] = useState(false);
   const [connectionError, setConnectionError] = useState(false);
   const [manualInput, setManualInput] = useState('');
   const [askManual, setAskManual] = useState(false);
@@ -21,7 +23,8 @@ export default function HomePage() {
   const [messages, setMessages] = useState({
     coat: 'Esperando datos del clima...',
     rain: 'Esperando datos del clima...',
-    uv: 'Esperando datos del clima...'
+    uv: 'Esperando datos del clima...',
+    sunTime: 'Esperando datos del clima...'
   });
   const [suggestion, setSuggestion] = useState({ text: '', link: '', visible: false });
   const [shareLinks, setShareLinks] = useState({ visible: false });
@@ -103,6 +106,14 @@ export default function HomePage() {
   
 
   useEffect(() => {
+    // Intentar obtener la última ciudad buscada de localStorage
+    let lastCity = null;
+    try {
+      lastCity = localStorage.getItem('lastCity');
+    } catch (error) {
+      console.error('Error al leer de localStorage:', error);
+    }
+    
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         // Callback de éxito
@@ -118,27 +129,50 @@ export default function HomePage() {
         // Callback de error
         (error) => {
           console.error('Error de geolocalización:', error);
-          setLocation({
-            lat: null,
-            lon: null,
-            city: 'No se pudo obtener ubicación',
-            error: error.message,
-            source: 'error'
-          });
-          setAskManual(true);
+          
+          // Si tenemos una ciudad guardada, usarla como fallback
+          if (lastCity) {
+            setLocation({
+              lat: null,
+              lon: null,
+              city: lastCity,
+              error: null,
+              source: 'manual'
+            });
+          } else {
+            setLocation({
+              lat: null,
+              lon: null,
+              city: 'No se pudo obtener ubicación',
+              error: error.message,
+              source: 'error'
+            });
+            setAskManual(true);
+          }
         },
         // Opciones
         { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
       );
     } else {
-      setLocation({
-        lat: null,
-        lon: null,
-        city: 'Geolocalización no soportada',
-        error: 'Tu navegador no soporta geolocalización',
-        source: 'error'
-      });
-      setAskManual(true);
+      // Si tenemos una ciudad guardada, usarla como fallback
+      if (lastCity) {
+        setLocation({
+          lat: null,
+          lon: null,
+          city: lastCity,
+          error: null,
+          source: 'manual'
+        });
+      } else {
+        setLocation({
+          lat: null,
+          lon: null,
+          city: 'Geolocalización no soportada',
+          error: 'Tu navegador no soporta geolocalización',
+          source: 'error'
+        });
+        setAskManual(true);
+      }
     }
   }, []);
   
@@ -148,21 +182,50 @@ export default function HomePage() {
     if (location.source && ((location.source === 'auto' && location.lat && location.lon) || 
         (location.source === 'manual' && location.city))) {
       fetchWeather(location);
+      
+      // Guardar la ciudad en localStorage si es una búsqueda manual
+      if (location.source === 'manual' && location.city) {
+        try {
+          localStorage.setItem('lastCity', location.city);
+        } catch (error) {
+          console.error('Error al guardar en localStorage:', error);
+        }
+      }
     }
   }, [location.lat, location.lon, location.city, location.source]);
+  
+  // Efecto para establecer el modo oscuro/claro según la hora del día
+  useEffect(() => {
+    const checkDayTime = () => {
+      const currentHour = new Date().getHours();
+      // Modo oscuro entre 19:00 y 6:59
+      const isDarkTime = currentHour >= 19 || currentHour < 7;
+      setDarkMode(isDarkTime);
+    };
+    
+    // Verificar al cargar y cada hora
+    checkDayTime();
+    const interval = setInterval(checkDayTime, 60 * 60 * 1000); // Cada hora
+    
+    return () => clearInterval(interval);
+  }, []);
 
-  // Función para generar sugerencia de vestimenta basada en el clima
-  const getClothingSuggestion = (weatherData) => {
+  // Función para generar sugerencia de vestimenta basada en el clima usando useMemo
+  const clothingSuggestion = useMemo(() => {
     // Si no hay datos del clima, retornar objeto vacío
-    if (!weatherData) {
+    if (!weather) {
       return { text: '', keyword: '' };
     }
 
-    // Extraer datos necesarios del objeto weatherData
-    const temp = weatherData.main.feels_like ?? weatherData.main.temp;
-    const uvi = weatherData.uvi ?? 0; // Puede no estar presente
-    const condition = weatherData.weather[0].main;
-    const pop = weatherData.pop ?? 0; // Probabilidad de precipitación
+    // Extraer datos necesarios del objeto weather
+    const temp = weather.main.feels_like ?? weather.main.temp;
+    const uvi = weather.uvi ?? 0; // Puede no estar presente
+    const condition = weather.weather[0].main;
+    const pop = weather.pop ?? 0; // Probabilidad de precipitación
+    const sunrise = weather.sunrise;
+    const sunset = weather.sunset;
+    const now = Math.floor(Date.now() / 1000); // Tiempo actual en segundos
+    const isDayTime = sunrise && sunset ? (now > sunrise && now < sunset) : true;
 
     // Lógica para la sugerencia de vestimenta
     let suggestionText = '';
@@ -193,21 +256,27 @@ export default function HomePage() {
     }
 
     // Añadir sugerencia para protección UV si es necesario
-    if (uvi > 6) {
+    if (uvi > 6 && isDayTime) {
       suggestionText += ' No olvides gorra y protector solar por el sol fuerte.';
       if (temp > 20) {
         keyword = 'gorra verano ' + keyword;
       }
     }
+    
+    // Añadir sugerencia basada en la hora del día
+    if (!isDayTime) {
+      suggestionText += ' Como ya es de noche, considera llevar algo reflectante si vas a caminar.';
+    }
 
-    return { text: suggestionText, keyword };
-  };
+    return { text: suggestionText, keyword: keyword };
+  }, [weather]); // Solo recalcular cuando cambia el clima
 
   // Función para manejar el clic en el botón "¿Qué me pongo?"
   const handleSuggestionClick = () => {
     if (!weather) return;
     
-    const { text, keyword } = getClothingSuggestion(weather);
+    // Usar la sugerencia memoizada
+    const { text, keyword } = clothingSuggestion;
     // Construir el enlace de afiliado (usando MercadoLibre como ejemplo)
     // Nota: En un entorno real, deberías usar tu ID de afiliado real
     const affiliateId = process.env.NEXT_PUBLIC_AFFILIATE_ID_ML || 'APP_ABRIGO';
@@ -221,7 +290,7 @@ export default function HomePage() {
     if (!weather || !location.city) return;
     
     // Construir el texto a compartir
-    const shareText = `Clima en ${location.city}: ${Math.round(weather.main.temp)}°C. ${messages.coat} Chequealo en ${window.location.href}`;
+    const shareText = `Clima en ${location.city}: ${Math.round(weather.main.temp)}°C. ${generatedMessages.coat} Chequealo en ${window.location.href}`;
     
     // Intentar usar la API Web Share si está disponible
     if (navigator.share) {
@@ -238,22 +307,25 @@ export default function HomePage() {
     }
   };
 
-  // Función para generar mensajes personalizados basados en el clima
-  const generateMessages = (weatherData) => {
+  // Función para generar mensajes personalizados basados en el clima usando useMemo
+  const generatedMessages = useMemo(() => {
     // Si no hay datos del clima, retornar mensajes por defecto
-    if (!weatherData) {
+    if (!weather) {
       return {
         coat: 'Esperando datos del clima...',
         rain: 'Esperando datos del clima...',
-        uv: 'Esperando datos del clima...'
+        uv: 'Esperando datos del clima...',
+        sunTime: 'Esperando datos del clima...'
       };
     }
 
-    // Extraer datos necesarios del objeto weatherData
-    const temp = weatherData.main.feels_like ?? weatherData.main.temp;
-    const uvi = weatherData.uvi ?? 0; // Puede no estar presente
-    const condition = weatherData.weather[0].main;
-    const pop = weatherData.pop ?? 0; // Probabilidad de precipitación, puede no estar
+    // Extraer datos necesarios del objeto weather
+    const temp = weather.main.feels_like ?? weather.main.temp;
+    const uvi = weather.uvi ?? 0; // Puede no estar presente
+    const condition = weather.weather[0].main;
+    const pop = weather.pop ?? 0; // Probabilidad de precipitación, puede no estar
+    const sunrise = weather.sunrise;
+    const sunset = weather.sunset;
 
     // Lógica para el mensaje de abrigo
     let coatMessage = '';
@@ -284,24 +356,37 @@ export default function HomePage() {
     } else {
       uvMessage = 'El sol está tranqui. Igual, protector no viene mal.'; 
     }
+    
+    // Lógica para el mensaje de amanecer/atardecer
+    let sunTimeMessage = 'Sin datos de amanecer/atardecer';
+    if (sunrise && sunset) {
+      const now = Math.floor(Date.now() / 1000); // Tiempo actual en segundos
+      const sunriseTime = new Date(sunrise * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+      const sunsetTime = new Date(sunset * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+      
+      if (now < sunrise) {
+        sunTimeMessage = `Todavía es de noche. Amanece a las ${sunriseTime}.`;
+      } else if (now < sunset) {
+        sunTimeMessage = `Es de día. Anochece a las ${sunsetTime}.`;
+      } else {
+        sunTimeMessage = `Ya es de noche. Amaneció a las ${sunriseTime} y anocheció a las ${sunsetTime}.`;
+      }
+    }
 
     return {
       coat: coatMessage,
       rain: rainMessage,
-      uv: uvMessage
+      uv: uvMessage,
+      sunTime: sunTimeMessage
     };
-  };
+  }, [weather]); // Solo recalcular cuando cambia el clima
 
-  // Efecto para actualizar los mensajes cuando cambia el clima
+  // Efecto para actualizar los mensajes cuando cambia generatedMessages
   useEffect(() => {
     if (weather) {
-      const newMessages = generateMessages(weather);
-      // Comparar si los mensajes realmente cambiaron para evitar actualizaciones innecesarias
-      if (JSON.stringify(newMessages) !== JSON.stringify(messages)) {
-        setMessages(newMessages);
-      }
+      setMessages(generatedMessages);
     }
-  }, [weather, messages]);
+  }, [generatedMessages, weather]);
 
   // Función para buscar ciudades mientras el usuario escribe
   const searchCities = async (query) => {
@@ -369,13 +454,13 @@ export default function HomePage() {
   };
 
   return (
-    <main className="container mx-auto p-4 flex flex-col items-center min-h-screen bg-blue-50">
-      <h1 className="text-4xl font-bold mt-8 mb-6 text-blue-800 text-center">¿Puedo salir sin abrigo?</h1>
+    <main className={`container mx-auto p-4 flex flex-col items-center min-h-screen ${darkMode ? 'bg-gray-900 text-white' : 'bg-blue-50'}`}>
+      <h1 className={`text-4xl font-bold mt-8 mb-6 ${darkMode ? 'text-blue-300' : 'text-blue-800'} text-center`}>¿Puedo salir sin abrigo?</h1>
       
-      <div className="mt-4 mb-2 text-lg font-medium bg-white rounded-lg shadow-sm p-3 w-full max-w-md">
+      <div className={`mt-4 mb-2 text-lg font-medium ${darkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg shadow-sm p-3 w-full max-w-md`}>
         <div className="flex flex-col items-center">
-          <div className="text-gray-700 mb-1">📍 Ubicación actual:</div>
-          <div className="text-2xl font-bold text-blue-700">{location.city}</div>
+          <div className={`${darkMode ? 'text-gray-300' : 'text-gray-700'} mb-1`}>📍 Ubicación actual:</div>
+          <div className={`text-2xl font-bold ${darkMode ? 'text-blue-300' : 'text-blue-700'}`}>{location.city}</div>
           {location.error && <div className="text-red-500 mt-1">({location.error})</div>}
         </div>
       </div>
@@ -452,7 +537,7 @@ export default function HomePage() {
       )}
       
       <div className="mt-4 mb-6 w-full max-w-md">
-        <div className="bg-white rounded-lg shadow-md p-4">
+        <div className={`${darkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg shadow-md p-4`}>
           {loadingWeather ? (
             <div className="text-center py-4">
               <div className="text-blue-500 mb-2 animate-spin text-2xl">⟳</div>
@@ -490,8 +575,8 @@ export default function HomePage() {
                   {weather.main.temp !== undefined ? `${Math.round(weather.main.temp)}°C` : 'N/A'}
                 </div>
               </div>
-              <p className="text-lg capitalize mb-1">{weather.weather[0].description || 'Sin descripción'}</p>
-              <p className="text-sm text-gray-600">Sensación térmica: {weather.main.feels_like !== undefined ? `${Math.round(weather.main.feels_like)}°C` : 'N/A'}</p>
+              <p className="text-lg capitalize mb-1 text-gray-800 font-medium">{weather.weather[0].description || 'Sin descripción'}</p>
+              <p className="text-sm text-gray-700">Sensación térmica: {weather.main.feels_like !== undefined ? `${Math.round(weather.main.feels_like)}°C` : 'N/A'}</p>
               <div className="flex flex-wrap justify-center gap-2 mt-2 text-sm">
                 <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded-full">Humedad: {weather.main.humidity !== undefined ? `${weather.main.humidity}%` : 'N/A'}</span>
                 <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded-full">Viento: {weather.wind && weather.wind.speed !== undefined ? `${Math.round(weather.wind.speed * 3.6)} km/h` : 'N/A'}</span>
@@ -505,19 +590,27 @@ export default function HomePage() {
         </div>
       </div>
       
-      <div className="flex items-center mt-4 mb-2 bg-white p-3 rounded-lg shadow-sm w-full max-w-md">
+      <div className={`flex items-center mt-4 mb-2 ${darkMode ? 'bg-gray-800' : 'bg-white'} p-3 rounded-lg shadow-sm w-full max-w-md`}>
         <FaThermometerHalf className="mr-2 text-xl text-red-500" />
-        <p><span className="font-medium">🧥 Abrigo:</span> {messages.coat}</p>
+        <p className={`${darkMode ? 'text-gray-200' : 'text-gray-800'}`}><span className={`font-medium ${darkMode ? 'text-gray-100' : 'text-gray-900'}`}>🧥 Abrigo:</span> {generatedMessages.coat}</p>
       </div>
       
-      <div className="flex items-center mt-4 mb-2 bg-white p-3 rounded-lg shadow-sm w-full max-w-md">
+      <div className={`flex items-center mt-4 mb-2 ${darkMode ? 'bg-gray-800' : 'bg-white'} p-3 rounded-lg shadow-sm w-full max-w-md`}>
         <FaCloudShowersHeavy className="mr-2 text-xl text-blue-500" />
-        <p><span className="font-medium">☔ Lluvia:</span> {messages.rain}</p>
+        <p className={`${darkMode ? 'text-gray-200' : 'text-gray-800'}`}><span className={`font-medium ${darkMode ? 'text-gray-100' : 'text-gray-900'}`}>☔ Lluvia:</span> {generatedMessages.rain}</p>
       </div>
       
-      <div className="flex items-center mt-4 mb-6 bg-white p-3 rounded-lg shadow-sm w-full max-w-md">
+      <div className={`flex items-center mt-4 mb-2 ${darkMode ? 'bg-gray-800' : 'bg-white'} p-3 rounded-lg shadow-sm w-full max-w-md`}>
         <FaSun className="mr-2 text-xl text-yellow-500" />
-        <p><span className="font-medium">🧴 Protección UV:</span> {messages.uv}</p>
+        <p className={`${darkMode ? 'text-gray-200' : 'text-gray-800'}`}><span className={`font-medium ${darkMode ? 'text-gray-100' : 'text-gray-900'}`}>🧴 Protección UV:</span> {generatedMessages.uv}</p>
+      </div>
+      
+      <div className={`flex items-center mt-4 mb-6 ${darkMode ? 'bg-gray-800' : 'bg-white'} p-3 rounded-lg shadow-sm w-full max-w-md`}>
+        <div className="flex items-center mr-2">
+          <LuSunrise className="text-xl text-orange-400 mr-1" />
+          <LuSunset  className="text-xl text-orange-600" />
+        </div>
+        <p className={`${darkMode ? 'text-gray-200' : 'text-gray-800'}`}><span className={`font-medium ${darkMode ? 'text-gray-100' : 'text-gray-900'}`}>🌅 Sol:</span> {generatedMessages.sunTime}</p>
       </div>
       
       <button 
@@ -529,7 +622,7 @@ export default function HomePage() {
       </button>
       
       {suggestion.visible && (
-        <div className="bg-white p-5 rounded-lg shadow-md mb-6 max-w-md text-center">
+        <div className={`${darkMode ? 'bg-gray-800' : 'bg-white'} p-5 rounded-lg shadow-md mb-6 max-w-md text-center`}>
           <p className="mb-4 text-lg">{suggestion.text}</p>
           <a 
             href={suggestion.link} 
@@ -551,12 +644,12 @@ export default function HomePage() {
         Compartir
       </button>
       
-      {shareLinks.visible && (
+      {/* {shareLinks.visible && (
         <div className="bg-white p-5 rounded-lg shadow-md mb-8 max-w-md text-center">
           <p className="mb-4 text-lg font-medium text-blue-800">Compartir vía:</p>
           <div className="flex flex-wrap justify-center gap-3">
             <a 
-              href={`whatsapp://send?text=${encodeURIComponent(`Clima en ${location.city}: ${Math.round(weather.main.temp)}°C. ${messages.coat} Chequealo en ${window.location.href}`)}`}
+              href={`whatsapp://send?text=${encodeURIComponent(`Clima en ${location.city}: ${Math.round(weather.main.temp)}°C. ${generatedMessages.coat} Chequealo en ${window.location.href}`)}`}
               className="bg-green-600 hover:bg-green-800 text-white font-bold py-2 px-4 rounded-full text-sm shadow-sm transition duration-300 ease-in-out transform hover:scale-105"
               target="_blank"
               rel="noopener noreferrer"
@@ -564,7 +657,7 @@ export default function HomePage() {
               WhatsApp
             </a>
             <a 
-              href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(`Clima en ${location.city}: ${Math.round(weather.main.temp)}°C. ${messages.coat} Chequealo en ${window.location.href}`)}`}
+              href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(`Clima en ${location.city}: ${Math.round(weather.main.temp)}°C. ${generatedMessages.coat} Chequealo en ${window.location.href}`)}`}
               className="bg-blue-400 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-full text-sm shadow-sm transition duration-300 ease-in-out transform hover:scale-105"
               target="_blank"
               rel="noopener noreferrer"
@@ -572,7 +665,7 @@ export default function HomePage() {
               Twitter
             </a>
             <a 
-              href={`mailto:?subject=¿Puedo salir sin abrigo?&body=${encodeURIComponent(`Clima en ${location.city}: ${Math.round(weather.main.temp)}°C. ${messages.coat} Chequealo en ${window.location.href}`)}`}
+              href={`mailto:?subject=¿Puedo salir sin abrigo?&body=${encodeURIComponent(`Clima en ${location.city}: ${Math.round(weather.main.temp)}°C. ${generatedMessages.coat} Chequealo en ${window.location.href}`)}`}
               className="bg-gray-600 hover:bg-gray-800 text-white font-bold py-2 px-4 rounded-full text-sm shadow-sm transition duration-300 ease-in-out transform hover:scale-105"
               target="_blank"
               rel="noopener noreferrer"
@@ -581,11 +674,11 @@ export default function HomePage() {
             </a>
           </div>
         </div>
-      )}
+      )} */}
       
-      <footer className="mt-auto py-6 text-center w-full bg-white bg-opacity-70 rounded-t-lg">
-        <p className="text-blue-700">Datos del clima proporcionados por <a href="https://openweathermap.org/" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-medium">OpenWeatherMap</a></p>
-        <p className="mt-2 text-gray-600">Hecho con ❤️ en Rosario</p>
+      <footer className={`mt-auto py-6 text-center w-full ${darkMode ? 'bg-gray-800 bg-opacity-90' : 'bg-white bg-opacity-70'} rounded-t-lg`}>
+        <p className={`${darkMode ? 'text-blue-300' : 'text-blue-700'}`}>Datos del clima proporcionados por <a href="https://openweathermap.org/" target="_blank" rel="noopener noreferrer" className={`${darkMode ? 'text-blue-400' : 'text-blue-600'} hover:underline font-medium`}>OpenWeatherMap</a></p>
+        <p className={`mt-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Hecho con ❤️ en Rosario</p>
       </footer>
     </main>
   );
