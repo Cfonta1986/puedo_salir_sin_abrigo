@@ -39,6 +39,8 @@ export async function GET(request) {
   const apiKey = process.env.NEXT_PUBLIC_OPENWEATHERMAP_API_KEY;
   // Usar una URL por defecto si la variable de entorno no está definida
   const baseUrl = process.env.NEXT_PUBLIC_OPENWEATHERMAP_API_URL || 'https://api.openweathermap.org/data/2.5';
+  // URL específica para la API OneCall
+  const oneCallBaseUrl = 'https://api.openweathermap.org/data/2.5';
 
   // Usar la API OneCall para obtener más datos, incluyendo amanecer/atardecer y UV
   let url = `${baseUrl}/weather?appid=${apiKey}&units=metric&lang=es`;
@@ -73,25 +75,36 @@ export async function GET(request) {
 
     const data = await response.json();
     
-    // Obtener datos adicionales con OneCall API para tener amanecer/atardecer y UV
-    if (data && data.coord) {
+    // Los datos de amanecer/atardecer ya están incluidos en la respuesta principal de la API
+    // Verificar y usar esos datos directamente
+    console.log('Datos principales del clima:', JSON.stringify(data, null, 2));
+    
+    // Si los datos del sol no están en la respuesta principal, intentar con OneCall API
+    if (data && data.coord && (!data.sys || (!data.sys.sunrise && !data.sys.sunset))) {
       try {
-        const oneCallUrl = `${baseUrl}/onecall?lat=${data.coord.lat}&lon=${data.coord.lon}&exclude=minutely,hourly,alerts&appid=${apiKey}&units=metric&lang=es`;
+        const oneCallUrl = `${oneCallBaseUrl}/onecall?lat=${data.coord.lat}&lon=${data.coord.lon}&exclude=minutely,hourly,alerts&appid=${apiKey}&units=metric&lang=es`;
+        console.log('URL de OneCall:', oneCallUrl);
         
         const oneCallResponse = await fetch(oneCallUrl, {
           cache: 'no-store'
         });
         
-        if (oneCallResponse.ok) {
+        if (!oneCallResponse.ok) {
+          const errorText = await oneCallResponse.text();
+          console.error(`Error en la API OneCall: ${oneCallResponse.status} - ${errorText}`);
+          // No fallamos la petición principal si los datos adicionales fallan
+        } else {
           const oneCallData = await oneCallResponse.json();
-          
+          console.log('Datos de OneCall recibidos:', JSON.stringify(oneCallData.current, null, 2));
+            
           // Añadir datos relevantes al objeto principal
           if (oneCallData.current) {
             data.uvi = oneCallData.current.uvi;
-            data.sunrise = oneCallData.current.sunrise;
-            data.sunset = oneCallData.current.sunset;
+            // Solo usar estos valores si no existen en la respuesta principal
+            if (!data.sys || !data.sys.sunrise) data.sunrise = oneCallData.current.sunrise;
+            if (!data.sys || !data.sys.sunset) data.sunset = oneCallData.current.sunset;
           }
-          
+            
           if (oneCallData.daily && oneCallData.daily.length > 0) {
             data.pop = oneCallData.daily[0].pop; // Probabilidad de precipitación
           }
@@ -100,6 +113,11 @@ export async function GET(request) {
         console.error('Error al obtener datos adicionales del clima:', error);
         // No fallamos la petición principal si los datos adicionales fallan
       }
+    } else if (data && data.sys) {
+      // Usar los datos del sol de la respuesta principal
+      console.log('Usando datos del sol de la respuesta principal');
+      data.sunrise = data.sys.sunrise;
+      data.sunset = data.sys.sunset;
     }
     
     // Guardar en caché
